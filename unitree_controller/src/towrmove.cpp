@@ -12,17 +12,34 @@ Use of this source code is governed by the MPL-2.0 license, see LICENSE.
 #include "unitree_legged_msgs/MotorState.h"
 #include <geometry_msgs/WrenchStamped.h>
 #include <sensor_msgs/Imu.h>
+#include <xpp_msgs/RobotStateJoint.h>
+#include <xpp_msgs/RobotStateCartesian.h>
+#include <xpp_msgs/RobotStateCartesianTrajectory.h>
+#include <sensor_msgs/JointState.h>
 #include <std_msgs/Bool.h>
 #include <vector>
 #include <string>
 #include <math.h>
 #include <nav_msgs/Odometry.h>
 #include "body.h"
+#include <towr_ros/TowrCommand.h>
 
 using namespace std;
 using namespace unitree_model;
 
 bool start_up = true;
+
+bool first = true;
+bool towrReceived = false;
+int counter = 0;
+//In Milliseconds
+double timePerStep = 1000.0;
+//In Seconds
+double totalTime = 2.4;
+ros::Time startTime;
+
+std::vector<sensor_msgs::JointState> jointStates;
+xpp_msgs::RobotStateCartesianTrajectory trajectory;
 
 class multiThread
 {
@@ -203,9 +220,61 @@ private:
     string robot_name;
 };
 
+
+void trajectoryMessageReceived(const xpp_msgs::RobotStateCartesianTrajectory& msg) {
+    ROS_INFO_STREAM(std::fixed << "Got Trajectory:" << msg);
+    trajectory = msg;
+}
+
+void jointstateMessageReceived(const xpp_msgs::RobotStateJoint& msg) {
+
+    //ROS_INFO_STREAM(std::fixed << "Got Jointstate");
+    if (first) {
+        first = false;
+        startTime = ros::Time().now();
+    }
+
+    sensor_msgs::JointState sensormsg;
+    sensormsg = msg.joint_state;
+    sensormsg.name = {"FL_hip_joint", "FL_thigh_joint", "FL_calf_joint", 
+                        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
+                        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
+                        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"};
+    sensormsg.header.stamp = startTime + msg.time_from_start;
+
+    jointStates.push_back(sensormsg);
+
+    // ROS_INFO_STREAM(std::fixed << "Got data: ");
+    // for (int i = 0; i < 12; i++) {
+    //     ROS_INFO_STREAM(std::fixed << sensormsg.position[i]);
+    // }
+}
+
+
+void done(const std_msgs::Bool msg) {
+
+    if (msg.data) {
+        timePerStep = (totalTime * 1000) / jointStates.size();
+
+        ROS_INFO_STREAM(std::fixed << "TimePerStep: " << timePerStep);
+        towrReceived = true;
+    } else {
+        motion_init();
+    }
+
+}
+
+void newSettings(const towr_ros::TowrCommand msg) {
+    totalTime = msg.total_duration;
+}
+
+// void listenForParams(const TowrCommandMsg& msg){
+
+// }
+
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "unitree_gazebo_servo");
+    ros::init(argc, argv, "unitree_towr");
 
     string robot_name;
     ros::param::get("/robot_name", robot_name);
@@ -234,15 +303,36 @@ int main(int argc, char **argv)
     servo_pub[10] = n.advertise<unitree_legged_msgs::MotorCmd>("/" + robot_name + "_gazebo/RL_thigh_controller/command", 1);
     servo_pub[11] = n.advertise<unitree_legged_msgs::MotorCmd>("/" + robot_name + "_gazebo/RL_calf_controller/command", 1);
 
+    ros::Subscriber sub = n.subscribe("xpp/joint_aliengo_des", 1000, &jointstateMessageReceived);
+    ros::Subscriber sub_trajectory = n.subscribe("xpp/trajectory_des", 1000, &trajectoryMessageReceived);
+    ros::Subscriber subDone = n.subscribe("towr2gaz/done", 1000, &done);
+    ros::Subscriber towrCommand = n.subscribe("towr/user_command", 1000, &newSettings);
+
     motion_init();
 
     while (ros::ok()){
         /*
         control logic
         */
-        lowState_pub.publish(lowState);
-        sendServoCmd(1);
-
+        if (towrReceived) {
+            double currentTime = timePerStep * counter;
+            double currentTrajectoryIndexDouble = currentTime / 10;
+            int currentTrajectoryIndex = (int) currentTrajectoryIndexDouble;
+            // ros::Duration testTime = trajectory.points[currentTrajectoryIndex].time_from_start;
+            // ROS_INFO_STREAM(std::fixed << "CurrentTime: " << currentTime << " currentIndex: " << currentTrajectoryIndex);
+            // ROS_INFO_STREAM(std::fixed << "CurrentIndexInt: " << currentTrajectoryIndex << " Testtime: " << testTime);
+            moveTowr(jointStates[counter], trajectory.points[currentTrajectoryIndex], timePerStep, counter);
+            counter++;
+            // ROS_INFO_STREAM(std::fixed << "Moved once");
+            if (counter == jointStates.size()) {
+                towrReceived = false;
+                counter = 0;
+                ROS_INFO_STREAM(std::fixed << "Finished movement");
+            }
+        } else {
+            lowState_pub.publish(lowState);
+            sendServoCmd(1);
+        }
     }
     return 0;
 }
