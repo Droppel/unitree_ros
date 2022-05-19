@@ -17,11 +17,14 @@ Use of this source code is governed by the MPL-2.0 license, see LICENSE.
 #include <xpp_msgs/RobotStateCartesianTrajectory.h>
 #include <sensor_msgs/JointState.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Int64.h>
 #include <vector>
 #include <string>
 #include <math.h>
 #include <nav_msgs/Odometry.h>
 #include "body.h"
+#include "inversekinematics.h"
+#include "storetrajectory.h"
 #include <towr_ros/TowrCommand.h>
 
 using namespace std;
@@ -33,13 +36,14 @@ bool first = true;
 bool towrReceived = false;
 int counter = 0;
 //In Milliseconds
-double timePerStep = 1000.0;
+double stepPerTime = 1000.0;
 //In Seconds
 double totalTime = 2.4;
 ros::Time startTime;
 
-std::vector<sensor_msgs::JointState> jointStates;
 xpp_msgs::RobotStateCartesianTrajectory trajectory;
+
+int msgCounter = 0;
 
 class multiThread
 {
@@ -224,42 +228,31 @@ private:
 void trajectoryMessageReceived(const xpp_msgs::RobotStateCartesianTrajectory& msg) {
     ROS_INFO_STREAM(std::fixed << "Got Trajectory:" << msg);
     trajectory = msg;
+    save("motion" + std::to_string(msgCounter), msg);
+    msgCounter++;
 }
 
-void jointstateMessageReceived(const xpp_msgs::RobotStateJoint& msg) {
+void done(const std_msgs::Int64 msg) {
 
-    //ROS_INFO_STREAM(std::fixed << "Got Jointstate");
-    if (first) {
-        first = false;
-        startTime = ros::Time().now();
-    }
-
-    sensor_msgs::JointState sensormsg;
-    sensormsg = msg.joint_state;
-    sensormsg.name = {"FL_hip_joint", "FL_thigh_joint", "FL_calf_joint", 
-                        "FR_hip_joint", "FR_thigh_joint", "FR_calf_joint",
-                        "RL_hip_joint", "RL_thigh_joint", "RL_calf_joint",
-                        "RR_hip_joint", "RR_thigh_joint", "RR_calf_joint"};
-    sensormsg.header.stamp = startTime + msg.time_from_start;
-
-    jointStates.push_back(sensormsg);
-
-    // ROS_INFO_STREAM(std::fixed << "Got data: ");
-    // for (int i = 0; i < 12; i++) {
-    //     ROS_INFO_STREAM(std::fixed << sensormsg.position[i]);
-    // }
-}
-
-
-void done(const std_msgs::Bool msg) {
-
-    if (msg.data) {
-        timePerStep = (totalTime * 1000) / jointStates.size();
-
-        ROS_INFO_STREAM(std::fixed << "TimePerStep: " << timePerStep);
-        towrReceived = true;
-    } else {
+    if (msg.data == -1) {
         motion_init();
+    } else {
+        
+        trajectory = xpp_msgs::RobotStateCartesianTrajectory();
+        std::string name = "motion";
+        name.append(std::to_string(msg.data));
+        load(name, &trajectory);
+        ROS_INFO_STREAM(std::fixed << "Points: " << trajectory.points[4]);
+        
+        //Calc new time
+        double totalTimeMilliSeconds = totalTime;
+        double steps = double(trajectory.points.size());
+        ROS_INFO_STREAM(std::fixed << "totalMill: " << totalTimeMilliSeconds);
+        ROS_INFO_STREAM(std::fixed << "steps: " << steps);
+        stepPerTime = steps / totalTimeMilliSeconds;
+        ROS_INFO_STREAM(std::fixed << "StepPerTime: " << stepPerTime);
+
+        towrReceived = true;
     }
 
 }
@@ -267,10 +260,6 @@ void done(const std_msgs::Bool msg) {
 void newSettings(const towr_ros::TowrCommand msg) {
     totalTime = msg.total_duration;
 }
-
-// void listenForParams(const TowrCommandMsg& msg){
-
-// }
 
 int main(int argc, char **argv)
 {
@@ -303,7 +292,8 @@ int main(int argc, char **argv)
     servo_pub[10] = n.advertise<unitree_legged_msgs::MotorCmd>("/" + robot_name + "_gazebo/RL_thigh_controller/command", 1);
     servo_pub[11] = n.advertise<unitree_legged_msgs::MotorCmd>("/" + robot_name + "_gazebo/RL_calf_controller/command", 1);
 
-    ros::Subscriber sub = n.subscribe("xpp/joint_aliengo_des", 1000, &jointstateMessageReceived);
+    ros::Rate rate(100);
+
     ros::Subscriber sub_trajectory = n.subscribe("xpp/trajectory_des", 1000, &trajectoryMessageReceived);
     ros::Subscriber subDone = n.subscribe("towr2gaz/done", 1000, &done);
     ros::Subscriber towrCommand = n.subscribe("towr/user_command", 1000, &newSettings);
@@ -315,24 +305,25 @@ int main(int argc, char **argv)
         control logic
         */
         if (towrReceived) {
-            double currentTime = timePerStep * counter;
-            double currentTrajectoryIndexDouble = currentTime / 10;
-            int currentTrajectoryIndex = (int) currentTrajectoryIndexDouble;
-            // ros::Duration testTime = trajectory.points[currentTrajectoryIndex].time_from_start;
-            // ROS_INFO_STREAM(std::fixed << "CurrentTime: " << currentTime << " currentIndex: " << currentTrajectoryIndex);
-            // ROS_INFO_STREAM(std::fixed << "CurrentIndexInt: " << currentTrajectoryIndex << " Testtime: " << testTime);
-            moveTowr(jointStates[counter], trajectory.points[currentTrajectoryIndex], timePerStep, counter);
+            ros::Rate newRate(stepPerTime);
+            rate = newRate;
+
+            auto currentPoint = trajectory.points[counter];
+            xpp::Joints joints = GetAllJointAngles(currentPoint);
+            moveTowr(joints, currentPoint.ee_forces, /*stepPerTime*/0, counter);
             counter++;
             // ROS_INFO_STREAM(std::fixed << "Moved once");
-            if (counter == jointStates.size()) {
+            if (counter == trajectory.points.size()) {
                 towrReceived = false;
                 counter = 0;
                 ROS_INFO_STREAM(std::fixed << "Finished movement");
             }
         } else {
             lowState_pub.publish(lowState);
-            sendServoCmd(1);
+            sendServoCmd(0);
         }
+        ros::spinOnce();
+        rate.sleep();
     }
     return 0;
 }

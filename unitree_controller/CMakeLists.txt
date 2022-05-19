@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
     geometry_msgs
     xpp_msgs
     xpp_states
+    xpp_vis
     sensor_msgs
     unitree_legged_msgs
     towr_ros
@@ -43,9 +44,13 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${GAZEBO_CXX_FLAGS}")
 # Declare a C++ library
 add_library(${PROJECT_NAME}
     src/body.cpp
+    src/storetrajectory.cpp
+    src/inversekinematics.cpp
 )
 
 add_dependencies(${PROJECT_NAME} unitree_legged_msgs_gencpp)
+
+target_link_libraries(${PROJECT_NAME} yaml-cpp)
 
 target_link_libraries(${PROJECT_NAME}
   ${catkin_LIBRARIES} ${EXTRA_LIBS}

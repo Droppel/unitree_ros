@@ -46,10 +46,13 @@ void stand()
     moveAllPosition(pos, 2*1000);
 }
 
-void moveTowr(sensor_msgs::JointState sensormsg, xpp_msgs::RobotStateCartesian trajectory, double duration, int counter)
+void moveTowr(xpp::Joints joints, std::vector<geometry_msgs::Vector3> forces, double duration, int counter)
 {   
-    double* pos = &sensormsg.position[0];
-    newMoveAllPosition(trajectory, pos, duration, counter);
+    double* pos = new double[12];
+    for (int i = 0; i < 12; i++) {
+        pos[i] = joints.GetJoint(i);
+    }
+    newMoveAllPosition(forces, pos, duration, counter);
 }
 
 void motion_init()
@@ -63,8 +66,6 @@ void sendServoCmd(double sleepAfter)
     for(int m=0; m<12; m++){
         servo_pub[m].publish(lowCmd.motorCmd[m]);
     }
-    ros::spinOnce();
-    usleep(sleepAfter * 1000);
 }
 
 void moveAllPosition(double* targetPos, double duration)
@@ -81,19 +82,19 @@ void moveAllPosition(double* targetPos, double duration)
     }
 }
 
-void newMoveAllPosition(xpp_msgs::RobotStateCartesian trajectory, double* targetPos, double duration, int counter)
+void newMoveAllPosition(std::vector<geometry_msgs::Vector3> forces, double* targetPos, double duration, int counter)
 {
-    limbFTtoJointTorque(0, targetPos, trajectory);
-    limbFTtoJointTorque(1, targetPos, trajectory);
-    limbFTtoJointTorque(2, targetPos, trajectory);
-    limbFTtoJointTorque(3, targetPos, trajectory);
+    limbFTtoJointTorque(0, targetPos, forces);
+    limbFTtoJointTorque(1, targetPos, forces);
+    limbFTtoJointTorque(2, targetPos, forces);
+    limbFTtoJointTorque(3, targetPos, forces);
     for(int j=0; j<12; j++){
         lowCmd.motorCmd[j].q = targetPos[j]; 
     }
     sendServoCmd(duration);
-    for (int j=0; j<12; j++) {
-        ROS_INFO_STREAM(std::fixed << "Step: " << counter << "Joint: " << j << "\n" << lowCmd.motorCmd[j]);
-    } 
+    // for (int j=0; j<12; j++) {
+    //     ROS_INFO_STREAM(std::fixed << "Step: " << counter << "Joint: " << j << "\n" << lowCmd.motorCmd[j]);
+    // } 
 }
 
 //Needs the NEXT sensormsg
@@ -118,7 +119,7 @@ void getJacobian(int limb, Eigen::MatrixXd& J, double* targetPos)
 
 }
 
-void limbFTtoJointTorque(int limb, double* targetPos, xpp_msgs::RobotStateCartesian trajectory)
+void limbFTtoJointTorque(int limb, double* targetPos, std::vector<geometry_msgs::Vector3> forces)
 {
     Eigen::MatrixXd J,T,limbFT;
         getJacobian(limb, J, targetPos);
@@ -130,9 +131,9 @@ void limbFTtoJointTorque(int limb, double* targetPos, xpp_msgs::RobotStateCartes
         //             jointLimbFT[limb].torque.x,
         //             jointLimbFT[limb].torque.y,
         //             jointLimbFT[limb].torque.z;
-        limbFT << trajectory.ee_forces[limb].x,
-                  trajectory.ee_forces[limb].y,
-                  trajectory.ee_forces[limb].z;
+        limbFT << forces[limb].x,
+                  forces[limb].y,
+                  forces[limb].z;
                 //   0,
                 //   0,
                 //   0;
@@ -141,8 +142,8 @@ void limbFTtoJointTorque(int limb, double* targetPos, xpp_msgs::RobotStateCartes
  }
 
  void setLimbTorques(int limb, Eigen::MatrixXd T, double* targetPos) {
-    double pMin = 50;
-    double pMax = 500;
+    double pMin = 10;
+    double pMax = 5000;
 
     double errorQ0 = lowState.motorState[3 * limb].q - targetPos[3 * limb];
     double errorQ1 = lowState.motorState[3 * limb + 1].q - targetPos[3 * limb + 1];
